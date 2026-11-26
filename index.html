@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <title>Procedural Neon Creature</title>
+  <style>
+    /* পেজের বাড়তি মার্জিন বাদ দেওয়া এবং ব্যাকগ্রাউন্ড কালো করা */
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden; /* স্ক্রলবার বন্ধ রাখা */
+      background-color: #050505; /* গাঢ় কালো ব্যাকগ্রাউন্ড যাতে নিয়ন রঙ উজ্জ্বল দেখায় */
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- অ্যানিমেশন আঁকার জন্য HTML5 Canvas -->
+  <canvas id="canvas"></canvas>
+
+  <script>
+    // ==========================================
+    // ধাপ ১: ক্যানভাস এবং মাউস সেটআপ
+    // ==========================================
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d'); // 2D ড্রয়িং টুল নেওয়া হলো
+
+    // ব্রাউজারের পুরো স্ক্রিন জুড়ে ক্যানভাসের সাইজ সেট করা
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+
+    // স্ক্রিন ছোট-বড় করলে ক্যানভাসও যেন অ্যাডজাস্ট হয়
+    window.addEventListener('resize', () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+
+    // মাউসের অবস্থান ট্র্যাক করার অবজেক্ট (শুরুতে স্ক্রিনের মাঝখানে থাকবে)
+    const Input = {
+      mouse: { x: width / 2, y: height / 2 }
+    };
+
+    // মাউস নড়াচড়া করলে তার নতুন X এবং Y অবস্থান সেভ করা
+    window.addEventListener('mousemove', (e) => {
+      Input.mouse.x = e.clientX;
+      Input.mouse.y = e.clientY;
+    });
+
+    // দুটি বিন্দুর (Point) মধ্যে দূরত্ব বের করার সহজ ফাংশন
+    function getDistance(p1, p2) {
+      return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    }
+
+    // ==========================================
+    // ধাপ ২: মেরুদণ্ডের প্রতিটি অংশ (Segment Class)
+    // ==========================================
+    class Segment {
+      constructor(x, y, length, radius) {
+        this.x = x;           // অংশটির X অবস্থান
+        this.y = y;           // অংশটির Y অবস্থান
+        this.length = length; // সামনের অংশ থেকে এর দূরত্ব কতটুকু থাকবে
+        this.radius = radius; // শরীরের এই অংশটি কতটুকু মোটা হবে
+        this.angle = 0;       // অংশটি কোন দিকে ঘুরে আছে তার কোণ (Angle)
+        this.color = '#fff';  // অংশটির রঙ
+      }
+
+      // সামনের অংশটিকে অনুসরণ করার লজিক (Kinematics)
+      follow(target) {
+        const dx = target.x - this.x; // X অক্ষে দূরত্বের পার্থক্য
+        const dy = target.y - this.y; // Y অক্ষে দূরত্বের পার্থক্য
+        this.angle = Math.atan2(dy, dx); // সামনের অংশের দিকে কোণ বের করা
+
+        // নির্দিষ্ট দূরত্ব (length) বজায় রেখে পেছনে পেছনে আসা
+        this.x = target.x - Math.cos(this.angle) * this.length;
+        this.y = target.y - Math.sin(this.angle) * this.length;
+      }
+    }
+
+    // ==========================================
+    // ধাপ ৩: পায়ের নড়াচড়া ও Inverse Kinematics (Leg Class)
+    // ==========================================
+    class Leg {
+      constructor(hipSegment, side, length) {
+        this.hip = hipSegment; // শরীরের কোন গাঁটের সাথে পা যুক্ত থাকবে
+        this.side = side;      // বাম পাশের পা (-1) নাকি ডান পাশের পা (1)
+        this.length = length;  // পায়ের মোট দৈর্ঘ্য
+        this.reach = length * 1.1; // পা সর্বোচ্চ কতদূর পর্যন্ত টানটান হতে পারবে
+
+        // পায়ের পাতা (Foot) বর্তমানে মাটিতে কোথায় আছে
+        this.foot = { x: hipSegment.x, y: hipSegment.y };
+        // পায়ের বিশ্রামের আদর্শ জায়গা (Rest position)
+        this.rest = { x: hipSegment.x, y: hipSegment.y };
+        
+        this.isStepping = false; // পা কি এখন বাতাসে উঠে পদক্ষেপ ফেলছে?
+        this.stepProgress = 0;   // পদক্ষেপ কতটুকু সম্পন্ন হলো (0 থেকে 1)
+        this.stepStart = { x: 0, y: 0 }; // পদক্ষেপ শুরুর জায়গা
+      }
+
+      // শরীর নড়লে পায়ের আদর্শ জায়গা (Rest) কোথায় হওয়া উচিত তা হিসাব করা
+      updateRestPosition() {
+        // শরীরের কোণের সাথে ৯০ ডিগ্রি (Math.PI / 2) কোণে পাশে পা ছড়ানো
+        const spreadAngle = this.hip.angle + (Math.PI / 2.2) * this.side;
+        this.rest.x = this.hip.x + Math.cos(spreadAngle) * (this.length * 0.85);
+        this.rest.y = this.hip.y + Math.sin(spreadAngle) * (this.length * 0.85);
+      }
+
+      // নতুন পদক্ষেপ শুরু করা
+      step() {
+        if (!this.isStepping) {
+          this.isStepping = true;
+          this.stepProgress = 0;
+          this.stepStart.x = this.foot.x;
+          this.stepStart.y = this.foot.y;
+        }
+      }
+
+      // পায়ের চলন ও হাঁটুর ভাঁজ (Inverse Kinematics) হিসাব করা
+      solveIK() {
+        this.updateRestPosition();
+
+        // যদি পায়ের পাতা তার আদর্শ জায়গা থেকে অনেক দূরে সরে যায়, তবে নতুন পা ফেলা শুরু করবে
+        if (getDistance(this.foot, this.rest) > this.reach && !this.isStepping) {
+          this.step();
+        }
+
+        // পা ফেলার অ্যানিমেশন (মসৃণভাবে এক জায়গা থেকে আরেক জায়গায় যাওয়া)
+        if (this.isStepping) {
+          this.stepProgress += 0.18; // পা ফেলার গতি
+          if (this.stepProgress >= 1) {
+            this.stepProgress = 1;
+            this.isStepping = false; // পদক্ষেপ শেষ
+          }
+          // শুরুর জায়গা থেকে নতুন জায়গায় পা সরিয়ে নেওয়া
+          this.foot.x = this.stepStart.x + (this.rest.x - this.stepStart.x) * this.stepProgress;
+          this.foot.y = this.stepStart.y + (this.rest.y - this.stepStart.y) * this.stepProgress;
+        }
+      }
+
+      // স্ক্রিনে পা আঁকা (কোমর -> হাঁটু -> পায়ের পাতা)
+      draw(color) {
+        // হাঁটুর ভাঁজ কোন দিকে হবে তা বের করা (2-Bone IK ফর্মুলা)
+        const midX = (this.hip.x + this.foot.x) / 2;
+        const midY = (this.hip.y + this.foot.y) / 2;
+        const dist = getDistance(this.hip, this.foot);
+        
+        // পায়ের দৈর্ঘ্য অনুযায়ী হাঁটু কতটুকু বাইরের দিকে ভাঁজ হবে
+        const bend = Math.max(0, (this.length - dist) * 0.6);
+        const kneeAngle = this.hip.angle + (Math.PI / 2) * this.side;
+        const kneeX = midX + Math.cos(kneeAngle) * bend;
+        const kneeY = midY + Math.sin(kneeAngle) * bend;
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(this.hip.x, this.hip.y);   // কোমর থেকে শুরু
+        ctx.lineTo(kneeX, kneeY);             // হাঁটু পর্যন্ত রেখা
+        ctx.lineTo(this.foot.x, this.foot.y); // পায়ের পাতা পর্যন্ত রেখা
+        ctx.stroke();
+
+        // পায়ের পাতায় একটি ছোট উজ্জ্বল বিন্দু আঁকা
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(this.foot.x, this.foot.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // ==========================================
+    // ধাপ ৪: সম্পূর্ণ প্রাণী তৈরি (Creature Class)
+    // ==========================================
+    class Creature {
+      constructor(spineCount, legIndices, speed) {
+        this.spine = []; // মেরুদণ্ডের সব অংশ রাখার অ্যারে
+        this.legs = [];  // সব পা রাখার অ্যারে
+        this.speed = speed; // প্রাণীটির চলার গতি
+
+        // মেরুদণ্ডের অংশগুলো তৈরি করা (মাথা থেকে লেজ পর্যন্ত ক্রমশ চিকন হবে)
+        for (let i = 0; i < spineCount; i++) {
+          // সামনের দিক মোটা এবং লেজের দিক চিকন করার ফর্মুলা
+          const radius = Math.max(1.5, Math.sin((i / spineCount) * Math.PI) * 14);
+          this.spine.push(new Segment(width / 2, height / 2, 10, radius));
+        }
+
+        // প্রথম অংশটিকে 'মাথা' হিসেবে নির্ধারণ করা
+        this.head = this.spine[0];
+
+        // নির্দিষ্ট গাঁটগুলোতে ডান ও বাম পাশের পা যুক্ত করা
+        for (let index of legIndices) {
+          const hip = this.spine[index];
+          this.legs.push(new Leg(hip, 1, 38));  // ডান পা
+          this.legs.push(new Leg(hip, -1, 38)); // বাম পা
+        }
+      }
+
+      // প্রতি ফ্রেমে প্রাণীটির অবস্থান ও রঙ আপডেট করা
+      update(time) {
+        // ১. মাথাকে মাউসের দিকে ঘোরানো এবং এগিয়ে নেওয়া
+        const dx = Input.mouse.x - this.head.x;
+        const dy = Input.mouse.y - this.head.y;
+        const dist = Math.hypot(dx, dy);
+
+        // মাউস থেকে নির্দিষ্ট দূরত্বে থাকলে তবেই সামনে এগোবে
+        if (dist > 5) {
+          this.head.angle = Math.atan2(dy, dx);
+          this.head.x += Math.cos(this.head.angle) * this.speed;
+          this.head.y += Math.sin(this.head.angle) * this.speed;
+        }
+
+        // ২. মেরুদণ্ডের প্রতিটি অংশকে তার সামনের অংশের পেছনে নেওয়া এবং নিয়ন রঙ দেওয়া
+        this.spine.forEach((seg, i) => {
+          if (i > 0) {
+            seg.follow(this.spine[i - 1]); // আগের অংশকে অনুসরণ করা
+          }
+          // সময়ের সাথে পরিবর্তনশীল রংধনু (HSL) রঙ তৈরি
+          const hue = (i * 8 + time * 0.1) % 360;
+          seg.color = `hsl(${hue}, 100%, 60%)`;
+        });
+
+        // ৩. সবগুলো পায়ের হিসাব আপডেট করা
+        for (let leg of this.legs) {
+          leg.solveIK();
+        }
+      }
+
+      // ক্যানভাসে সম্পূর্ণ প্রাণীটি আঁকা
+      draw() {
+        // প্রথমে পাগুলো আঁকা (যাতে শরীরের নিচে থাকে)
+        for (let leg of this.legs) {
+          leg.draw(leg.hip.color);
+        }
+
+        // এরপর মেরুদণ্ডের হাড় ও পাঁজর (Ribs) আঁকা
+        for (let i = 0; i < this.spine.length; i++) {
+          const seg = this.spine[i];
+          
+          ctx.strokeStyle = seg.color;
+          ctx.fillStyle = seg.color;
+          ctx.shadowBlur = 12; // নিয়ন গ্লো (Glow) ইফেক্ট দেওয়া
+          ctx.shadowColor = seg.color;
+
+          // মেরুদণ্ডের মূল বিন্দু আঁকা
+          ctx.beginPath();
+          ctx.arc(seg.x, seg.y, seg.radius * 0.4, 0, Math.PI * 2);
+          ctx.fill();
+
+          // দুই পাশে কাঁটা বা পাঁজরের মতো রেখা আঁকা (ভিডিওর প্রাণীটির মতো লুক দিতে)
+          const ribAngle1 = seg.angle + Math.PI / 2;
+          const ribAngle2 = seg.angle - Math.PI / 2;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(seg.x + Math.cos(ribAngle1) * seg.radius, seg.y + Math.sin(ribAngle1) * seg.radius);
+          ctx.lineTo(seg.x + Math.cos(ribAngle2) * seg.radius, seg.y + Math.sin(ribAngle2) * seg.radius);
+          ctx.stroke();
+        }
+        ctx.shadowBlur = 0; // পারফরম্যান্স ঠিক রাখতে শ্যাডো রিসেট করা
+      }
+    }
+
+    // ==========================================
+    // ধাপ ৫: অ্যানিমেশন চালু করা (Main Loop)
+    // ==========================================
+    // ৩৫টি গাঁট বিশিষ্ট প্রাণী তৈরি, যার ৩, ৬, ৯, ১২, ১৫, ১৮, ২১ নম্বর গাঁটে পা থাকবে
+    // শেষে ৬ পিক্সেল প্রতি ফ্রেমের গতি (speed) দেওয়া হলো
+    const myCreature = new Creature(35, [3, 6, 9, 12, 15, 18, 21], 6);
+
+    function animate(time) {
+      // পুরো স্ক্রিন একবারে মুছে না ফেলে হালকা কালো আস্তরণ দেওয়া (যাতে পেছনে হালকা ট্রেইল বা আভা থাকে)
+      ctx.fillStyle = 'rgba(5, 5, 5, 0.35)';
+      ctx.fillRect(0, 0, width, height);
+
+      // প্রাণীর অবস্থান আপডেট ও ড্র করা
+      myCreature.update(time);
+      myCreature.draw();
+
+      // ব্রাউজারকে পরের ফ্রেম আঁকতে বলা (প্রতি সেকেন্ডে সাধারণত ৬০ বার চলে)
+      requestAnimationFrame(animate);
+    }
+
+    // অ্যানিমেশন শুরু!
+    animate(0);
+  </script>
+</body>
+</html>
