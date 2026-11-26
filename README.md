@@ -49,3 +49,5 @@ Mouse Movement (Input)
        │
        ▼
 [ HTML5 Canvas ] ──► Renders glowing neon ribs, joints, and motion trail
+
+[def]: ./preview.gif
